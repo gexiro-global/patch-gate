@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -31,6 +33,10 @@ class GateResult:
 
 
 def _matches(path: str, patterns: Sequence[str]) -> Optional[str]:
+    if len(patterns) > 1024:
+        return None
+
+    @functools.lru_cache(maxsize=None)
     def match_parts(path_parts: Sequence[str], pattern_parts: Sequence[str]) -> bool:
         if not pattern_parts:
             return not path_parts
@@ -40,9 +46,11 @@ def _matches(path: str, patterns: Sequence[str]) -> Optional[str]:
         return bool(path_parts) and fnmatch.fnmatchcase(path_parts[0], pattern_parts[0]) and match_parts(
             path_parts[1:], pattern_parts[1:])
 
-    path_parts = path.split("/")
+    path_parts = tuple(path.split("/"))
     for pattern in patterns:
-        if pattern and match_parts(path_parts, pattern.split("/")):
+        pattern_parts = tuple(pattern.split("/"))
+        if (pattern and len(pattern) <= 4096 and len(pattern_parts) <= 256
+                and match_parts(path_parts, pattern_parts)):
             return pattern
     return None
 
@@ -56,9 +64,22 @@ def _path_verdict(root: Path, path: str, allow: Sequence[str], deny: Sequence[st
     if "\\" in path:
         verdict["reason"] = "backslash path separators are ambiguous"
         return verdict
+    if re.match(r"^[A-Za-z]:", path) or any(":" in part for part in p.parts):
+        verdict["reason"] = "Windows drive or alternate-stream path is ambiguous"
+        return verdict
+    if len(p.parts) > 256:
+        verdict["reason"] = "path exceeds 256-component safety limit"
+        return verdict
     if any(part in ("", ".", "..") for part in p.parts):
         verdict["reason"] = "path contains empty, dot, or parent component"
         return verdict
+    windows_devices = {"CON", "PRN", "AUX", "NUL", *("COM%d" % n for n in range(1, 10)),
+                       *("LPT%d" % n for n in range(1, 10))}
+    for part in p.parts:
+        stem = part.split(".", 1)[0].upper()
+        if part.casefold() == ".git" or stem in windows_devices:
+            verdict["reason"] = "reserved Git or Windows path component"
+            return verdict
     target = root.joinpath(*p.parts)
     cursor = root
     try:
@@ -106,7 +127,13 @@ def run_gate(patch: bytes, *, mode: str = "inspect", root: Path = Path("."), str
     """Inspect, check, or atomically apply a patch after all gates pass."""
     if mode not in ("inspect", "check", "apply"):
         raise ValueError("mode must be inspect, check, or apply")
-    resolved_root = root.resolve()
+    try:
+        resolved_root = root.resolve()
+    except (OSError, ValueError, RuntimeError) as exc:
+        checks = {"parsed": False, "policy": False, "git_available": None,
+                  "git_check": None, "clean_tree": None, "applied": False}
+        return GateResult(mode, "usage_error", 2, str(root), [], checks,
+                          ["cannot resolve workspace root: %s" % exc])
     checks: Dict[str, object] = {"parsed": False, "policy": False, "git_available": None,
                                  "git_check": None, "clean_tree": None, "applied": False}
     try:

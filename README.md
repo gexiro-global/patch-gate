@@ -29,7 +29,9 @@ diff-gate apply change.patch --root /workspace/project --allow 'src/**' --allow 
 ```
 
 JSON is the deterministic default. Add `--format text` for a human-readable report. Use `-` as the
-patch name to read bytes from standard input.
+patch name to read bytes from standard input. A named patch file must be a regular, non-symlinked
+file inside `--root`; use standard input when the patch is stored elsewhere. Patch input is capped
+at 64 MiB and individual pathnames at 4096 decoded bytes.
 
 Exit codes are `0` for safe or applied, `1` for a safety/policy/Git-check rejection, and `2` for
 bad usage, unreadable input, or malformed/unsupported patch syntax.
@@ -50,6 +52,10 @@ before Git, but portable Python plus a `git` subprocess cannot make the pathname
 Git's writes one indivisible filesystem operation. Run it in an isolated workspace whose parent,
 Git executable, Git configuration, and environment are trusted. Resource exhaustion by very large
 patches is also out of scope.
+
+The guarantee therefore applies only when the gate is the sole actor changing an isolated
+workspace during a run. In particular, it is not an OS security boundary and does not defend a
+shared workspace against a concurrent hostile process.
 
 ## Modes
 
@@ -77,6 +83,9 @@ diff-gate inspect update.patch --allow 'src/**' --allow 'tests/**' \
 
 Existing symlink components are rejected even when they currently point inside the root. Patches
 that create or modify symlinks (`120000` mode) and binary Git patches are deliberately unsupported.
+Non-canonical symlink modes with the same file-type bits, Gitlinks, other non-regular modes,
+reserved `.git` components, Windows device names, drive paths, alternate streams, and components
+with trailing dots or spaces are rejected as well.
 
 ## Python API
 

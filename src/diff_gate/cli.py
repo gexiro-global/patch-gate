@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 
+_MAX_PATCH_BYTES = 64 * 1024 * 1024
+
+
+class _UsageError(ValueError):
+    pass
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise _UsageError(message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="diff-gate", description="Gate an untrusted unified diff")
+    parser = _ArgumentParser(prog="diff-gate", description="Gate an untrusted unified diff")
     parser.add_argument("mode", choices=("inspect", "check", "apply"))
     parser.add_argument("patch", help="patch file, or - for standard input")
     parser.add_argument("--root", default=".", metavar="DIR")
@@ -36,14 +49,44 @@ def _emit(payload: dict, output_format: str) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = _parser().parse_args(argv)
-    if args.strip < 0:
-        _parser().error("--strip must be non-negative")
     try:
-        patch = sys.stdin.buffer.read() if args.patch == "-" else Path(args.patch).read_bytes()
-    except OSError as exc:
+        args = _parser().parse_args(argv)
+        if args.strip < 0:
+            raise _UsageError("--strip must be non-negative")
+    except _UsageError as exc:
+        payload = {"mode": "unknown", "status": "usage_error", "exit_code": 2,
+                   "root": "", "paths": [], "checks": {}, "errors": [str(exc)]}
+        _emit(payload, "json")
+        return 2
+    try:
+        resolved_root = Path(args.root).resolve()
+        if args.patch == "-":
+            patch = sys.stdin.buffer.read(_MAX_PATCH_BYTES + 1)
+        else:
+            candidate = Path(args.patch)
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
+            candidate = candidate.absolute()
+            try:
+                relative = candidate.relative_to(resolved_root)
+            except ValueError:
+                raise OSError("patch file must be inside the workspace root")
+            if any(part in ("", ".", "..") for part in relative.parts):
+                raise OSError("patch file path contains a dot or parent component")
+            cursor = resolved_root
+            for part in relative.parts:
+                cursor /= part
+                mode = cursor.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    raise OSError("patch file must not traverse a symbolic link")
+            if not stat.S_ISREG(candidate.stat().st_mode):
+                raise OSError("patch input must be a regular file")
+            if candidate.stat().st_size > _MAX_PATCH_BYTES:
+                raise OSError("patch exceeds 64 MiB safety limit")
+            patch = candidate.read_bytes()
+    except (OSError, ValueError, RuntimeError) as exc:
         payload = {"mode": args.mode, "status": "usage_error", "exit_code": 2,
-                   "root": str(Path(args.root).resolve()), "paths": [], "checks": {},
+                   "root": str(args.root), "paths": [], "checks": {},
                    "errors": ["cannot read patch: %s" % exc]}
         _emit(payload, args.format)
         return 2

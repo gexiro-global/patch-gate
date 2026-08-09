@@ -33,6 +33,10 @@ class _Section:
     old_mode: Optional[bytes] = None
     changed_mode: Optional[bytes] = None
     saw_body: bool = False
+    hunks: int = 0
+    index_seen: bool = False
+    similarity_seen: bool = False
+    dissimilarity_seen: bool = False
 
 
 def _c_unquote(value: bytes) -> bytes:
@@ -147,6 +151,17 @@ def _strip(path: bytes, count: int) -> bytes:
     return b"/".join(parts[count:])
 
 
+def _validate_raw_path(path: bytes) -> None:
+    """Reject names that are unsafe or have platform-dependent aliases."""
+    if len(path) > 4096:
+        raise DiffParseError("path exceeds 4096-byte safety limit")
+    if b"\\" in path:
+        raise DiffParseError("backslash path separators are ambiguous")
+    for part in path.split(b"/"):
+        if part not in (b"", b".", b"..") and part.rstrip(b" .") != part:
+            raise DiffParseError("path component has trailing dot or space")
+
+
 def _logical_extended(path: bytes) -> bytes:
     # Git extended headers are repository-relative and do not carry a/ or b/.
     if path.startswith(b"/"):
@@ -154,7 +169,22 @@ def _logical_extended(path: bytes) -> bytes:
     return path
 
 
+def _validate_mode(value: bytes, label: str) -> bytes:
+    if re.fullmatch(br"[0-7]{6}", value) is None:
+        raise DiffParseError("malformed %s" % label)
+    file_type = int(value, 8) & 0o170000
+    if file_type == 0o120000:
+        raise DiffParseError("symbolic-link patches are unsupported")
+    if file_type != 0o100000:
+        raise DiffParseError("non-regular file modes are unsupported")
+    return value
+
+
 def _finish(section: _Section, strip: int) -> Iterable[bytes]:
+    for raw in (section.diff_old, section.diff_new, section.old, section.new,
+                section.rename_from, section.rename_to, section.copy_from, section.copy_to):
+        if raw is not None and raw != b"/dev/null":
+            _validate_raw_path(raw)
     rf = _logical_extended(section.rename_from) if section.rename_from is not None else None
     rt = _logical_extended(section.rename_to) if section.rename_to is not None else None
     cf = _logical_extended(section.copy_from) if section.copy_from is not None else None
@@ -162,6 +192,12 @@ def _finish(section: _Section, strip: int) -> Iterable[bytes]:
 
     if (section.old is None) != (section.new is None):
         raise DiffParseError("unpaired ---/+++ headers")
+    if section.old == b"/dev/null" and section.new == b"/dev/null":
+        raise DiffParseError("both content paths cannot be /dev/null")
+    if section.similarity_seen and section.dissimilarity_seen:
+        raise DiffParseError("section cannot have both similarity and dissimilarity headers")
+    if (section.similarity_seen or section.dissimilarity_seen) and rf is None and cf is None:
+        raise DiffParseError("similarity header requires rename or copy headers")
     if (rf is None) != (rt is None) or (cf is None) != (ct is None):
         raise DiffParseError("unpaired rename/copy headers")
     if rf is not None and cf is not None:
@@ -173,6 +209,11 @@ def _finish(section: _Section, strip: int) -> Iterable[bytes]:
     if (section.old is None and rf is None and cf is None and not section.new_mode
             and not section.deleted_mode and section.old_mode is None):
         raise DiffParseError("file section contains no patch operation")
+    if (section.old is not None and section.hunks == 0 and rf is None and cf is None
+            and not section.new_mode and not section.deleted_mode):
+        raise DiffParseError("content headers require at least one hunk")
+    if section.hunks and section.old is None:
+        raise DiffParseError("hunk requires paired ---/+++ headers")
     if section.diff_old is None and section.old is None:
         raise DiffParseError("file section contains no usable path headers")
 
@@ -224,6 +265,8 @@ def parse_diff(data: bytes, strip: int = 1) -> ParsedDiff:
         raise TypeError("patch data must be bytes")
     if strip < 0:
         raise DiffParseError("strip must be non-negative")
+    if len(data) > 64 * 1024 * 1024:
+        raise DiffParseError("patch exceeds 64 MiB safety limit")
     if not data or b"\x00" in data:
         raise DiffParseError("patch is empty or contains NUL bytes")
     binary_markers = (b"GIT binary patch", b"Binary files ", b"literal ", b"delta ")
@@ -235,9 +278,11 @@ def parse_diff(data: bytes, strip: int = 1) -> ParsedDiff:
     pending_old: Optional[bytes] = None
     lines = data.splitlines()
     hunk_old = hunk_new = 0
+    allow_no_newline_marker = False
     for line in lines:
         if hunk_old or hunk_new:
-            if line.startswith(b"\\ No newline at end of file"):
+            if line == b"\\ No newline at end of file" and allow_no_newline_marker:
+                allow_no_newline_marker = False
                 continue
             if not line:
                 raise DiffParseError("malformed empty line inside hunk")
@@ -253,15 +298,26 @@ def parse_diff(data: bytes, strip: int = 1) -> ParsedDiff:
                 raise DiffParseError("malformed hunk body")
             if hunk_old < 0 or hunk_new < 0:
                 raise DiffParseError("hunk contains more lines than declared")
+            allow_no_newline_marker = True
             continue
+        if line == b"\\ No newline at end of file" and allow_no_newline_marker:
+            allow_no_newline_marker = False
+            continue
+        allow_no_newline_marker = False
         if line.startswith(b"@@ "):
+            if current is None or current.old is None or current.new is None:
+                raise DiffParseError("hunk without paired file headers")
             match = re.match(br"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$", line)
             if match is None:
                 raise DiffParseError("malformed hunk header")
-            hunk_old = int(match.group(2) or b"1")
-            hunk_new = int(match.group(4) or b"1")
+            try:
+                hunk_old = int(match.group(2) or b"1")
+                hunk_new = int(match.group(4) or b"1")
+            except (ValueError, OverflowError):
+                raise DiffParseError("hunk count is too large") from None
             if hunk_old == 0 and hunk_new == 0:
                 raise DiffParseError("empty hunk is unsupported")
+            current.hunks += 1
             continue
         if line.startswith(b"diff --git "):
             if pending_old is not None:
@@ -281,55 +337,74 @@ def parse_diff(data: bytes, strip: int = 1) -> ParsedDiff:
                 raise DiffParseError("+++ header without preceding ---")
             if current.old is not None:
                 # A second traditional section without a diff --git delimiter.
+                if current.diff_old is not None:
+                    raise DiffParseError("duplicate ---/+++ headers in Git section")
                 sections.append(current)
                 current = _Section()
             current.old = pending_old
             current.new = _one_path(line[4:], timestamps=True)
             pending_old = None
         elif current is not None and line.startswith(b"rename from "):
-            if current.rename_from is not None:
-                raise DiffParseError("duplicate rename from header")
+            if current.rename_from is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced rename from header")
             current.rename_from = _one_path(line[12:])
         elif current is not None and line.startswith(b"rename to "):
-            if current.rename_to is not None:
-                raise DiffParseError("duplicate rename to header")
+            if current.rename_to is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced rename to header")
             current.rename_to = _one_path(line[10:])
         elif current is not None and line.startswith(b"copy from "):
-            if current.copy_from is not None:
-                raise DiffParseError("duplicate copy from header")
+            if current.copy_from is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced copy from header")
             current.copy_from = _one_path(line[10:])
         elif current is not None and line.startswith(b"copy to "):
-            if current.copy_to is not None:
-                raise DiffParseError("duplicate copy to header")
+            if current.copy_to is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced copy to header")
             current.copy_to = _one_path(line[8:])
         elif current is not None and line.startswith(b"new file mode "):
-            if current.new_mode:
-                raise DiffParseError("duplicate new file mode header")
-            if re.fullmatch(br"[0-7]{6}", line[14:]) is None:
-                raise DiffParseError("malformed new file mode")
-            if line[14:] == b"120000":
-                raise DiffParseError("symbolic-link patches are unsupported")
+            if current.new_mode or current.old is not None:
+                raise DiffParseError("duplicate or misplaced new file mode header")
+            _validate_mode(line[14:], "new file mode")
             current.new_mode = True
         elif current is not None and line.startswith(b"deleted file mode "):
-            if current.deleted_mode:
-                raise DiffParseError("duplicate deleted file mode header")
-            if re.fullmatch(br"[0-7]{6}", line[18:]) is None:
-                raise DiffParseError("malformed deleted file mode")
-            if line[18:] == b"120000":
-                raise DiffParseError("symbolic-link patches are unsupported")
+            if current.deleted_mode or current.old is not None:
+                raise DiffParseError("duplicate or misplaced deleted file mode header")
+            _validate_mode(line[18:], "deleted file mode")
             current.deleted_mode = True
         elif current is not None and line.startswith(b"old mode "):
-            if current.old_mode is not None or re.fullmatch(br"[0-7]{6}", line[9:]) is None:
-                raise DiffParseError("duplicate or malformed old mode header")
-            if line[9:] == b"120000":
-                raise DiffParseError("symbolic-link patches are unsupported")
-            current.old_mode = line[9:]
+            if current.old_mode is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced old mode header")
+            current.old_mode = _validate_mode(line[9:], "old mode header")
         elif current is not None and line.startswith(b"new mode "):
-            if current.changed_mode is not None or re.fullmatch(br"[0-7]{6}", line[9:]) is None:
-                raise DiffParseError("duplicate or malformed new mode header")
-            if line[9:] == b"120000":
-                raise DiffParseError("symbolic-link patches are unsupported")
-            current.changed_mode = line[9:]
+            if current.changed_mode is not None or current.old is not None:
+                raise DiffParseError("duplicate or misplaced new mode header")
+            current.changed_mode = _validate_mode(line[9:], "new mode header")
+        elif current is not None and line.startswith(b"index "):
+            if current.index_seen or current.old is not None:
+                raise DiffParseError("duplicate or misplaced index header")
+            if re.fullmatch(br"[0-9a-fA-F]+\.\.[0-9a-fA-F]+(?: [0-7]{6})?", line[6:]) is None:
+                raise DiffParseError("malformed index header")
+            current.index_seen = True
+            fields = line[6:].split(b" ")
+            if len(fields) == 2:
+                _validate_mode(fields[1], "index mode")
+        elif current is not None and line.startswith((b"similarity index ", b"dissimilarity index ")):
+            if current.old is not None:
+                raise DiffParseError("misplaced similarity header")
+            is_dissimilarity = line.startswith(b"dissimilarity index ")
+            if ((is_dissimilarity and current.dissimilarity_seen)
+                    or (not is_dissimilarity and current.similarity_seen)):
+                raise DiffParseError("duplicate similarity header")
+            value = line.split(b" ")[-1]
+            if re.fullmatch(br"(?:100|[0-9]{1,2})%", value) is None:
+                raise DiffParseError("malformed similarity header")
+            if is_dissimilarity:
+                current.dissimilarity_seen = True
+            else:
+                current.similarity_seen = True
+        elif not line:
+            continue
+        else:
+            raise DiffParseError("unsupported or misplaced patch line")
 
     if pending_old is not None:
         raise DiffParseError("unpaired --- header")

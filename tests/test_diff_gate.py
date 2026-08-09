@@ -236,3 +236,174 @@ def test_strip_zero_and_too_large():
     assert parse_diff(MODIFY, strip=0).paths == ("a/hello.txt", "b/hello.txt")
     with pytest.raises(DiffParseError, match="too few"):
         parse_diff(MODIFY, strip=2)
+
+
+@pytest.mark.parametrize("name, reason", [
+    (b"a/../../escape", "parent component"),
+    (b"a/dir\\escape", "backslash"),
+    (b"a/C:/escape", "Windows drive"),
+    (b"a/name. ", "trailing dot or space"),
+])
+def test_hostile_path_forms_fail_closed(tmp_path, name, reason):
+    patch = MODIFY.replace(b"a/hello.txt", name).replace(b"b/hello.txt", name.replace(b"a/", b"b/", 1))
+    result = run_gate(patch, root=tmp_path)
+    assert result.exit_code in (1, 2)
+    assert reason in (result.errors[0] + " " + " ".join(str(p["reason"]) for p in result.paths))
+
+
+def test_quoted_escape_traversal_nul_and_header_mismatch(tmp_path):
+    traversal = MODIFY.replace(b"a/hello.txt", b'"a/safe/\\056\\056/escape"').replace(
+        b"b/hello.txt", b'"b/safe/\\056\\056/escape"')
+    result = run_gate(traversal, root=tmp_path)
+    assert result.exit_code == 1
+    assert "parent component" in result.errors[0]
+    with pytest.raises(DiffParseError, match="NUL"):
+        parse_diff(MODIFY.replace(b"a/hello.txt", b'"a/x\\000y"'))
+    mismatch = MODIFY.replace(b"+++ b/hello.txt", b'+++ "b/other.txt"')
+    with pytest.raises(DiffParseError, match="conflicting"):
+        parse_diff(mismatch)
+
+
+@pytest.mark.parametrize("patch", [
+    b"--- a/x\n+++ b/x\n",
+    b"diff --git a/x b/x\nunknown metadata\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-x\n+y\n",
+    b"diff --git a/x b/x\n--- a/x\n+++ b/x\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-x\n+y\n",
+    b"diff --git a/x b/x\nindex not-a-hash\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-x\n+y\n",
+])
+def test_incomplete_duplicate_and_unknown_syntax_is_parse_error(patch):
+    with pytest.raises(DiffParseError):
+        parse_diff(patch)
+
+
+def test_huge_hunk_number_and_overlong_path_are_parse_errors():
+    huge = b"9" * 5000
+    patch = b"--- a/x\n+++ b/x\n@@ -1," + huge + b" +1 @@\n"
+    with pytest.raises(DiffParseError, match="too large"):
+        parse_diff(patch)
+    long_path = b"a/" + b"x" * 4097
+    with pytest.raises(DiffParseError, match="4096"):
+        parse_diff(MODIFY.replace(b"a/hello.txt", long_path).replace(b"b/hello.txt", b"b/" + b"x" * 4097))
+
+
+def test_multi_file_rejects_if_any_path_escapes(tmp_path):
+    unsafe = MODIFY.replace(b"hello.txt", b"../../escape")
+    result = run_gate(MODIFY + unsafe, root=tmp_path)
+    assert result.exit_code == 1
+    assert result.status == "rejected"
+    assert any(not item["safe"] for item in result.paths)
+
+
+def test_existing_target_symlink_is_rejected(tmp_path):
+    outside = tmp_path.parent / "outside-file"
+    outside.write_text("outside\n")
+    (tmp_path / "hello.txt").symlink_to(outside)
+    result = run_gate(MODIFY, root=tmp_path)
+    assert result.exit_code == 1
+    assert "symbolic link" in result.errors[0]
+    assert outside.read_text() == "outside\n"
+
+
+def test_cli_refuses_patch_file_outside_root_or_through_symlink(tmp_path, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.patch"
+    outside.write_bytes(MODIFY)
+    assert main(["inspect", str(outside), "--root", str(root)]) == 2
+    assert "inside the workspace" in json.loads(capsys.readouterr().out)["errors"][0]
+    (root / "link.patch").symlink_to(outside)
+    assert main(["inspect", str(root / "link.patch"), "--root", str(root)]) == 2
+    assert "symbolic link" in json.loads(capsys.readouterr().out)["errors"][0]
+
+
+def test_cli_invalid_args_and_nul_root_return_structured_usage_error(capsys):
+    assert main(["bogus", "-"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "usage_error"
+    assert payload["exit_code"] == 2
+    assert main(["inspect", "-", "--root", "bad\x00root"]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "usage_error"
+
+
+def test_no_newline_marker_remains_supported():
+    patch = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n"
+    assert parse_diff(patch).paths == ("x",)
+
+
+@pytest.mark.parametrize("name", [b".git/config", b"src/.GIT/config", b"NUL", b"aux.txt", b"dir/COM1.log"])
+def test_git_admin_and_windows_device_names_are_rejected(tmp_path, name):
+    patch = MODIFY.replace(b"hello.txt", name)
+    result = run_gate(patch, root=tmp_path)
+    assert result.exit_code == 1
+    assert "reserved" in result.errors[0]
+
+
+def test_empty_file_addition_with_headers_is_valid():
+    patch = b"diff --git a/empty b/empty\nnew file mode 100644\n--- /dev/null\n+++ b/empty\n"
+    assert parse_diff(patch).paths == ("empty",)
+
+
+def test_git_missing_is_structured_for_check_but_not_inspect(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    inspected = run_gate(MODIFY, mode="inspect", root=tmp_path)
+    assert inspected.exit_code == 0
+    checked = run_gate(MODIFY, mode="check", root=tmp_path)
+    assert checked.exit_code == 2
+    assert checked.status == "usage_error"
+    assert checked.checks["git_available"] is False
+    assert "git executable" in checked.errors[0]
+
+
+def test_git_root_must_equal_selected_root(tmp_path):
+    root = repo(tmp_path)
+    child = root / "child"
+    child.mkdir()
+    result = run_gate(MODIFY, mode="check", root=child)
+    assert result.exit_code == 2
+    assert "Git work-tree root" in result.errors[0]
+
+
+@pytest.mark.parametrize("mode", [b"120001", b"120755", b"160000", b"040000"])
+def test_noncanonical_symlink_and_nonregular_modes_never_apply(tmp_path, mode):
+    root = repo(tmp_path)
+    patch = (b"diff --git a/hostile b/hostile\nnew file mode " + mode
+             + b"\n--- /dev/null\n+++ b/hostile\n@@ -0,0 +1 @@\n+/tmp/outside\n")
+    result = run_gate(patch, mode="apply", root=root)
+    assert result.exit_code == 2
+    assert result.status == "parse_error"
+    assert not (root / "hostile").exists()
+    assert not (root / "hostile").is_symlink()
+
+
+def test_symlink_type_bits_in_index_header_are_rejected():
+    patch = MODIFY.replace(b"100644\n", b"120001\n")
+    with pytest.raises(DiffParseError, match="symbolic-link"):
+        parse_diff(patch)
+
+
+def test_mixed_safe_and_escape_patch_never_partially_applies(tmp_path):
+    root = repo(tmp_path)
+    unsafe = MODIFY.replace(b"hello.txt", b"../../escape")
+    result = run_gate(MODIFY + unsafe, mode="apply", root=root)
+    assert result.exit_code == 1
+    assert result.checks["git_check"] is None
+    assert (root / "hello.txt").read_text() == "hello\n"
+
+
+def test_policy_is_case_sensitive_and_deny_wins_at_multiple_depths(tmp_path):
+    upper = MODIFY.replace(b"hello.txt", b"Src/Deep/File.py")
+    assert run_gate(upper, root=tmp_path, allow=("src/**",)).exit_code == 1
+    lower = MODIFY.replace(b"hello.txt", b"src/deep/file.py")
+    result = run_gate(lower, root=tmp_path, allow=("src/**",), deny=("src/**/file.py",))
+    assert result.exit_code == 1
+    assert "denied" in result.errors[0]
+
+
+@pytest.mark.parametrize("patch", [
+    b"diff --git a/x b/x\n--- /dev/null\n+++ /dev/null\n@@ -0,0 +1 @@\n+x\n",
+    b"diff --git a/x b/x\nindex 1111111..2222222 100644\nindex 1111111..2222222 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    b"diff --git a/x b/x\nsimilarity index 100%\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    b"diff --git a/x b/x\n--- a/x\n+++ b/x\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-a\n+b\n",
+])
+def test_null_duplicate_and_misplaced_metadata_fail_closed(patch):
+    with pytest.raises(DiffParseError):
+        parse_diff(patch)
