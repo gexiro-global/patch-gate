@@ -1,0 +1,5 @@
+# Pass each non-comment line as the corresponding repeated CLI option.
+allow src/**
+allow tests/**
+deny **/*.pem
+deny src/generated/**

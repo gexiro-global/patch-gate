@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diff-gate"
+version = "0.1.0"
+description = "Policy-gated application of untrusted unified diffs."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{name = "Gexiro Global Enterprises Ltd"}]
+keywords = ["diff", "patch", "security", "policy", "git"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/gexiro-global/diff-gate"
+Repository = "https://github.com/gexiro-global/diff-gate"
+
+[project.scripts]
+diff-gate = "diff_gate.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

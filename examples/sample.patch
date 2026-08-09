@@ -1,0 +1,7 @@
+diff --git a/src/greeting.py b/src/greeting.py
+index 2f9a147..e56cfa8 100644
+--- a/src/greeting.py
++++ b/src/greeting.py
+@@ -1 +1 @@
+-print("hello")
++print("hello from diff-gate")
