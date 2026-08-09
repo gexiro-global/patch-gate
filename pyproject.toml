@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diff-gate"
+name = "patch-gate"
 version = "0.1.0"
 description = "Policy-gated application of untrusted unified diffs."
 readme = "README.md"
@@ -14,11 +14,11 @@ keywords = ["diff", "patch", "security", "policy", "git"]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/gexiro-global/diff-gate"
-Repository = "https://github.com/gexiro-global/diff-gate"
+Homepage = "https://github.com/gexiro-global/patch-gate"
+Repository = "https://github.com/gexiro-global/patch-gate"
 
 [project.scripts]
-diff-gate = "diff_gate.cli:main"
+patch-gate = "patch_gate.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

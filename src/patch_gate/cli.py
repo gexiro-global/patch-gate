@@ -23,7 +23,7 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _ArgumentParser(prog="diff-gate", description="Gate an untrusted unified diff")
+    parser = _ArgumentParser(prog="patch-gate", description="Gate an untrusted unified diff")
     parser.add_argument("mode", choices=("inspect", "check", "apply"))
     parser.add_argument("patch", help="patch file, or - for standard input")
     parser.add_argument("--root", default=".", metavar="DIR")

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from diff_gate.cli import main
-from diff_gate.gate import run_gate
-from diff_gate.parser import DiffParseError, parse_diff
+from patch_gate.cli import main
+from patch_gate.gate import run_gate
+from patch_gate.parser import DiffParseError, parse_diff
 
 
 MODIFY = b"""diff --git a/hello.txt b/hello.txt

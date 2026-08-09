@@ -1,20 +1,20 @@
-# diff-gate
+# patch-gate
 
-[![CI](https://github.com/gexiro-global/diff-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/diff-gate/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/diff-gate.svg)](https://pypi.org/project/diff-gate/)
-[![Python](https://img.shields.io/pypi/pyversions/diff-gate.svg)](https://pypi.org/project/diff-gate/)
+[![CI](https://github.com/gexiro-global/patch-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/gexiro-global/patch-gate/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/patch-gate.svg)](https://pypi.org/project/patch-gate/)
+[![Python](https://img.shields.io/pypi/pyversions/patch-gate.svg)](https://pypi.org/project/patch-gate/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Preflight untrusted unified diffs against explicit path policy before Git can change your workspace.
 
-`diff-gate` strictly parses textual Git/unified patches, reports every affected path, applies
+`patch-gate` strictly parses textual Git/unified patches, reports every affected path, applies
 allow/deny globs, rejects traversal and symlink paths, and delegates patch validation and atomic
 application to `git apply`. The core has no third-party runtime dependencies.
 
 ## Install
 
 ```bash
-pip install diff-gate
+pip install patch-gate
 ```
 
 Python 3.9 or newer is required. `inspect` needs only Python; `check` and `apply` require Git, and
@@ -23,9 +23,9 @@ Python 3.9 or newer is required. `inspect` needs only Python; `check` and `apply
 ## Quick start
 
 ```bash
-diff-gate inspect change.patch --root /workspace/project
-diff-gate check change.patch --root /workspace/project --deny '.env' --deny 'secrets/**'
-diff-gate apply change.patch --root /workspace/project --allow 'src/**' --allow 'tests/**'
+patch-gate inspect change.patch --root /workspace/project
+patch-gate check change.patch --root /workspace/project --deny '.env' --deny 'secrets/**'
+patch-gate apply change.patch --root /workspace/project --allow 'src/**' --allow 'tests/**'
 ```
 
 JSON is the deterministic default. Add `--format text` for a human-readable report. Use `-` as the
@@ -38,7 +38,7 @@ bad usage, unreadable input, or malformed/unsupported patch syntax.
 
 ## Threat model
 
-`diff-gate` is designed to stop an untrusted textual patch from naming a path outside the selected
+`patch-gate` is designed to stop an untrusted textual patch from naming a path outside the selected
 workspace, traversing an existing symbolic link, or touching a path excluded by caller policy. It
 decodes Git's C-quoted paths, cross-checks redundant Git headers, rejects ambiguous headers,
 binary patches, and symlink-mode changes, and runs the exact patch through `git apply --check`
@@ -77,7 +77,7 @@ to `file`. Rename and copy source and destination paths are all gated.
 Examples:
 
 ```bash
-diff-gate inspect update.patch --allow 'src/**' --allow 'tests/**' \
+patch-gate inspect update.patch --allow 'src/**' --allow 'tests/**' \
   --deny 'src/generated/**' --deny '**/*.pem'
 ```
 
@@ -91,7 +91,7 @@ with trailing dots or spaces are rejected as well.
 
 ```python
 from pathlib import Path
-from diff_gate import run_gate
+from patch_gate import run_gate
 
 result = run_gate(
     Path("change.patch").read_bytes(),
