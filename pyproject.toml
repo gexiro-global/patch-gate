@@ -9,6 +9,7 @@ description = "Policy-gated application of untrusted unified diffs."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{name = "Gexiro Global Enterprises Ltd"}]
 keywords = ["diff", "patch", "security", "policy", "git"]
 dependencies = []
@@ -25,6 +26,9 @@ dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+patch_gate = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

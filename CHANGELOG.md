@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Ship the inline type-information marker and explicit license-file metadata.
+
 ## [0.1.0]
 
 - Initial public release.
