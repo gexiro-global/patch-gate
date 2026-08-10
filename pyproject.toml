@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<77", "wheel>=0.41,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,10 +8,18 @@ version = "0.1.0"
 description = "Policy-gated application of untrusted unified diffs."
 readme = "README.md"
 requires-python = ">=3.9"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
+license = {file = "LICENSE"}
 authors = [{name = "Gexiro Global Enterprises Ltd"}]
 keywords = ["diff", "patch", "security", "policy", "git"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+  "Typing :: Typed",
+]
 dependencies = []
 
 [project.urls]
@@ -22,7 +30,7 @@ Repository = "https://github.com/gexiro-global/patch-gate"
 patch-gate = "patch_gate.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8,<10", "build>=1,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

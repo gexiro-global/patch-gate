@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - Ship the inline type-information marker and explicit license-file metadata.
+- Bound build and development dependencies to tested next-major ceilings and add complete
+  license, audience, Python, security-topic, and typed-package classifiers.
 
 ## [0.1.0]
 
